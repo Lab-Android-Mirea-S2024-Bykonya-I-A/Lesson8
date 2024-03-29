@@ -1,10 +1,15 @@
 package com.mirea.bykonyaia.mireaproject;
 
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import androidx.preference.PreferenceManager;
 
+import android.Manifest;
 import android.app.LauncherActivity;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.util.Log;
@@ -32,11 +37,15 @@ public class MainActivity extends AppCompatActivity {
     private PointsOfInterestMapFragment map_view = null;
     private ActivityMainBinding binding = null;
 
+    private static final int REQUEST_CODE_PERMISSION = 200;
+    private boolean is_permissions_granted = false;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         binding = ActivityMainBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
+        MakePermissionsRequest();
     }
     @Override
     protected void onStart() {
@@ -62,28 +71,129 @@ public class MainActivity extends AppCompatActivity {
             }
         };
 
-
         UpdatePointsOfInterest();
     }
 
+
+
+    private void MakePermissionsRequest() {
+        is_permissions_granted =
+                PackageManager.PERMISSION_GRANTED == ContextCompat.checkSelfPermission(this, android.Manifest.permission.INTERNET) &&
+                        PackageManager.PERMISSION_GRANTED == ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_NETWORK_STATE) &&
+                        PackageManager.PERMISSION_GRANTED == ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) &&
+                        PackageManager.PERMISSION_GRANTED == ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_COARSE_LOCATION) &&
+                        PackageManager.PERMISSION_GRANTED == ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_BACKGROUND_LOCATION) &&
+                        PackageManager.PERMISSION_GRANTED == ContextCompat.checkSelfPermission(this, android.Manifest.permission.WRITE_EXTERNAL_STORAGE);
+
+        if(!is_permissions_granted) {
+            ActivityCompat.requestPermissions(this,
+                    new	String[] { android.Manifest.permission.INTERNET,
+                            android.Manifest.permission.ACCESS_NETWORK_STATE,
+                            android.Manifest.permission.ACCESS_FINE_LOCATION,
+                            android.Manifest.permission.ACCESS_COARSE_LOCATION,
+                            android.Manifest.permission.ACCESS_BACKGROUND_LOCATION,
+                            Manifest.permission.WRITE_EXTERNAL_STORAGE
+                    },	REQUEST_CODE_PERMISSION);
+        }
+    }
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        Log.i("", "onRequestPermissionsResult: " + String.valueOf(requestCode));
+        if(requestCode == REQUEST_CODE_PERMISSION) {
+            is_permissions_granted = (grantResults[0] == PackageManager.PERMISSION_GRANTED);
+        } else {
+            finish();
+        }
+    }
     public void OnUpdatePointsOfInterestButtonClicked(View v) {
         UpdatePointsOfInterest();
     }
     private void UpdatePointsOfInterest() {
-        List<PointsOfInterestDto> points = new ArrayList<>();
-        points.add(new PointsOfInterestDto(
-                "MIREA title", "Mirea description",
-                new GeoPoint(55.794259, 37.701448)
-        ));
-        points.add(new PointsOfInterestDto(
-                "Shop Title", "Shop Description",
-                new GeoPoint(55.795667, 37.700810)
-        ));
-        points.add(new PointsOfInterestDto(
-                "Dorm Title", "Dorm Description",
-                new GeoPoint(55.801121, 37.805680)
-        ));
-        list_view.SetPointsOfInterestModel(points);
-        map_view.SetPointsOfInterestModel(points);
+        if(is_permissions_granted)
+            new RequestPointsOfInterestList().execute();
     }
+
+    private class BaseHttpRequestTask extends AsyncTask<Void, Void, String> {
+        private final String address;
+        private final String method;
+        public BaseHttpRequestTask(String address, String method) {
+            this.address = address;
+            this.method = method;
+        }
+
+        @Override
+        protected String doInBackground(Void... params) {
+            try {
+                return MakeRequest();
+            } catch (IOException | RuntimeException e) {
+                Log.i("HE_HE", e.toString());
+                return null;
+            }
+        }
+        private String MakeRequest() throws IOException, RuntimeException {
+            final URL url = new URL(address);
+            final HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            connection.setReadTimeout(100000);
+            connection.setConnectTimeout(100000);
+            connection.setRequestMethod(method);
+            connection.setInstanceFollowRedirects(true);
+            connection.setUseCaches(false);
+            connection.setDoInput(true);
+
+            if (connection.getResponseCode() != HttpURLConnection.HTTP_OK)
+                throw new RuntimeException("Invalid return code");
+
+            Log.i("HE_HE", "MAKE_READ");
+            InputStream inputStream = connection.getInputStream();
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            for (int read = 0; (read = inputStream.read()) != -1;) {
+                bos.write(read);
+            }
+            final String result = bos.toString();
+            connection.disconnect();
+            bos.close();
+            return result;
+        }
+    }
+    private class RequestPointsOfInterestList extends BaseHttpRequestTask {
+        public RequestPointsOfInterestList() {
+            super("http://178.208.86.244:8000/points.json", "GET");
+        }
+
+        @Override
+        protected void onPostExecute(String result) {
+            super.onPostExecute(result);
+            if(result == null)
+                return;
+
+            Log.i("HE_HE", result);
+            try {
+                final List<PointsOfInterestDto> points = new ArrayList<>();
+                final JSONArray pointsJson = new JSONArray(result);
+                for(int index = 0; index < pointsJson.length(); ++index) {
+                    try {
+                        final JSONObject pointJson = pointsJson.getJSONObject(index);
+                        final JSONObject pointJsonLocation = pointJson.getJSONObject("location");
+                        points.add(new PointsOfInterestDto(
+                            pointJson.getString("title"),
+                            pointJson.getString("description"),
+                            new GeoPoint(
+                                pointJsonLocation.getDouble("latitude"),
+                                pointJsonLocation.getDouble("longitude")
+                            )
+                        ));
+                    } catch (JSONException e) {
+                        e.printStackTrace();
+                    }
+                }
+
+                list_view.SetPointsOfInterestModel(points);
+                map_view.SetPointsOfInterestModel(points);
+            } catch (JSONException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
 }
